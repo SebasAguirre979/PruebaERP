@@ -54,6 +54,7 @@ class RolePermission(models.Model):
 
     class Meta:
         db_table = "rolepermission"
+        unique_together = ('role', 'permission', 'module')
 
     def __str__(self):
         return f"{self.role.name} - {self.permission.name} - {self.module.name}"
@@ -64,6 +65,7 @@ class UserRole(models.Model):
 
     class Meta:
         db_table = "userrole"
+        unique_together = ('user', 'role')
 
     def __str__(self):
         return f"{self.user.username} - {self.role.name}"
@@ -75,6 +77,7 @@ class UserPermission(models.Model):
 
     class Meta:
         db_table = "userpermission"
+        unique_together = ('user', 'permission', 'module')
 
     def __str__(self):
         return f"{self.user.username} - {self.permission.name} - {self.module.name}"
