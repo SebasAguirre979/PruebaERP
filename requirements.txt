@@ -1,3 +1,5 @@
 django
 djangorestframework
 psycopg2
+djangorestframework-simplejwt
+drf_spectacular

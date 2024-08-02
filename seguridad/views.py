@@ -50,12 +50,12 @@ class CreateUserView(APIView):
         if User.objects.filter(email=email).exists():
             return Response({'error': 'El correo electrónico ya está en uso.'}, status=400)
         
-        User.objects.get_or_create(cedula=cedula, username=username, email=email, password=password)
+        User.objects.create(cedula=cedula, username=username, email=email, password=password)
         
         return Response({
             'message': 'Usuario creado'
         }, status=201)
-    
+         
 class UserChangePassword(APIView):
     def post(self, request, cedula):
         password_antigua = request.data.get('password_antigua')
