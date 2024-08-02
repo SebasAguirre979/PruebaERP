@@ -4,6 +4,7 @@ from .serializers import UserSerializer, RoleSerializer, PermissionSerializer, M
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from django.contrib.auth.hashers import check_password
+from django.db import transaction
 
 class UserViewSet(viewsets.ModelViewSet):
     queryset = User.objects.all()
@@ -33,7 +34,7 @@ class UserPermissionViewSet(viewsets.ModelViewSet):
     queryset = UserPermission.objects.all()
     serializer_class = UserPermissionSerializer
 
-class CreateUserAndAssignRoleView(APIView):
+class CreateUserView(APIView):
     def post(self, request):
         cedula = request.data.get('cedula')
         username = request.data.get('username')
@@ -41,22 +42,21 @@ class CreateUserAndAssignRoleView(APIView):
         password = request.data.get('password')
 
         if User.objects.filter(cedula=cedula).exists():
-            return Response({'error': 'El usuario ya está creado.'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'error': 'El usuario ya está creado.'}, status=400)
         
         if User.objects.filter(username=username).exists():
-            return Response({'error': 'El nombre de usuario ya está en uso.'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'error': 'El nombre de usuario ya está en uso.'}, status=400)
         
         if User.objects.filter(email=email).exists():
-            return Response({'error': 'El correo electrónico ya está en uso.'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'error': 'El correo electrónico ya está en uso.'}, status=400)
         
-        user = User(cedula=cedula, username=username, email=email, password=password)
-        user.save()
-
+        User.objects.get_or_create(cedula=cedula, username=username, email=email, password=password)
+        
         return Response({
             'message': 'Usuario creado'
         }, status=201)
     
-class UserChangePasswordView(APIView):
+class UserChangePassword(APIView):
     def post(self, request, cedula):
         password_antigua = request.data.get('password_antigua')
         password_nueva = request.data.get('password_nueva')
@@ -85,26 +85,17 @@ class UserPermissionRole(APIView):
         try:
             user = User.objects.get(cedula=cedula)
         except User.DoesNotExist:
-            return Response({'error':'el usuario no existe'}, status=404)
+            return Response({'error':'El usuario no existe'}, status=404)
         
         user_role = UserRole.objects.filter(user=user)
         user_permission = UserPermission.objects.filter(user=user)
-
-        roles_data = []
         permissions_data = []
         
         user_date = {
             'usuario': user.username,
-            'roles': roles_data,
+            'roles': [rol.role.name for rol in user_role],
             'permisos_especiales': permissions_data
         }
-
-        for rol in user_role:
-            role_data = {
-                'rol': rol.role.name
-
-            }
-            roles_data.append(role_data)
 
         for permission in user_permission:
             type_data = {
@@ -114,3 +105,122 @@ class UserPermissionRole(APIView):
             permissions_data.append(type_data)
 
         return Response(user_date, status=200)
+    
+class CreateRoleWithPermission(APIView):
+    @transaction.atomic
+    def post(self, request):
+        role_name = request.data.get('role_name')
+        permissions_data = request.data.get('permissions', [])
+
+        if Role.objects.filter(name=role_name).exists():
+            return Response({'error': 'Ya existe un rol con este nombre.'}, status=400)
+
+        try:
+            role = Role.objects.create(name=role_name)
+
+            for permission_entry in permissions_data:
+                module_id = permission_entry.get('module_id')
+                permission_ids = permission_entry.get('permission_ids', [])
+
+                try:
+                    module = Module.objects.get(id=module_id)
+                except Module.DoesNotExist:
+                    raise ValueError(f'Módulo con id {module_id} no encontrado.')
+
+                for permission_id in permission_ids:
+                    try:
+                        permission = Permission.objects.get(id=permission_id)
+                    except Permission.DoesNotExist:
+                        raise ValueError(f'Permiso con id {permission_id} no encontrado.')
+
+                    RolePermission.objects.get_or_create(role=role, permission=permission, module=module)
+
+        except ValueError as e:
+            transaction.set_rollback(True)
+            return Response({'error': str(e)}, status=400)
+
+        return Response({
+            'message': 'Rol creado y permisos asignados exitosamente.',
+            'rol_id': role.id,
+            'rol_nombre': role.name
+        }, status=201)
+    
+class AddRolesAndPermissionsUser(APIView):
+    @transaction.atomic
+    def post(self, request):
+        user_id = request.data.get('user_id')
+        role_ids = request.data.get('role_ids', [])
+        permissions_data = request.data.get('permissions', [])
+
+        try:
+            user = User.objects.get(cedula=user_id)
+        except User.DoesNotExist:
+            return Response({'error': 'Usuario no encontrado.'}, status=404)
+
+        roles = Role.objects.filter(id__in=role_ids)
+        if len(roles) != len(role_ids):
+            return Response({'error': 'Uno o más roles no existen.'}, status=404)
+        
+        try:
+            for role in roles:
+                UserRole.objects.get_or_create(user=user, role=role)
+
+            for permission_entrante in permissions_data:
+                module_id = permission_entrante.get('module_id')
+                permission_ids = permission_entrante.get('permission_ids', [])
+
+                try:
+                    module = Module.objects.get(id=module_id)
+                except Module.DoesNotExist:
+                    return Response({'error': f'Módulo con id {module_id} no encontrado.'}, status=404)
+
+                for permission_id in permission_ids:
+                    try:
+                        permission = Permission.objects.get(id=permission_id)
+                    except Permission.DoesNotExist:
+                        return Response({'error': f'Permiso con id {permission_id} no encontrado.'}, status=404)
+
+                    UserPermission.objects.get_or_create(user=user, permission=permission, module=module)
+                    
+        except ValueError as e:
+            transaction.set_rollback(True)
+            return Response({'error': str(e)}, status=400)
+
+        return Response({
+            'message': 'Roles y permisos asignados exitosamente.',
+            'cedula': user.cedula
+        }, status=200)
+    
+class VerifyUser(APIView):
+    def post(self, request):
+        cedula = request.data.get('cedula')
+        password = request.data.get('password')
+
+        try:
+            user = User.objects.get(cedula=cedula)
+        except User.DoesNotExist:
+            return Response({'error': 'Usuario no encontrado.'}, status=404)
+
+        if not check_password(password, user.password):
+            return Response({'error': 'Contraseña incorrecta.'}, status=404)
+
+        roles = Role.objects.filter(userrole__user=user)
+
+        user_permissions = UserPermission.objects.filter(user=user)
+        permissions_data = []
+        
+        for perm in user_permissions:
+            type_data = {
+                'module': perm.module.name,
+                'permission': perm.permission.name
+            }
+            permissions_data.append(type_data)
+
+        response_data = {
+            'cedula': user.cedula,
+            'usuario': user.username,
+            'roles': [role.name for role in roles],
+            'permisos_especiales': permissions_data
+        }
+
+        return Response(response_data, status=200)
